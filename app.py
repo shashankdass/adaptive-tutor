@@ -163,6 +163,50 @@ SUBJECTS = {
             ),
         },
     },
+    "Mathematics": {
+        "Chapter 1: Arithmetic & Fractions": {
+            "Novice": (
+                "Order of operations, basic arithmetic, and what a fraction "
+                "represents."
+            ),
+            "Intermediate": (
+                "Adding/subtracting fractions with different denominators, "
+                "percentages, and ratios."
+            ),
+            "Expert": (
+                "Multi-step word problems, converting between fractions/"
+                "decimals/percentages, and compound ratios."
+            ),
+        },
+        "Chapter 2: Algebra Basics": {
+            "Novice": (
+                "Variables, evaluating simple expressions, and solving "
+                "one-step equations."
+            ),
+            "Intermediate": (
+                "Solving linear equations with variables on both sides, and "
+                "the slope/intercept of a line."
+            ),
+            "Expert": (
+                "Factoring quadratics, systems of equations, and manipulating "
+                "exponents/inequalities."
+            ),
+        },
+        "Chapter 3: Geometry & Intro to Calculus": {
+            "Novice": (
+                "Area/perimeter of basic shapes, angles, and the Pythagorean "
+                "theorem."
+            ),
+            "Intermediate": (
+                "Circle area/circumference, volume of solids, and coordinate "
+                "geometry."
+            ),
+            "Expert": (
+                "The idea of a limit, the derivative as a rate of change, and "
+                "interpreting the slope of a tangent line."
+            ),
+        },
+    },
 }
 
 # Short blurbs shown on the landing page.
@@ -170,6 +214,7 @@ SUBJECT_BLURBS = {
     "Basic Python Programming": "Variables, control flow, and functions.",
     "Data Structures & Algorithms": "Arrays, hashing, sorting, and complexity.",
     "Intro to Data Science": "Statistics, pandas, and a first taste of ML.",
+    "Mathematics": "Arithmetic, algebra, geometry, and a taste of calculus.",
 }
 
 PROMOTION_THRESHOLD = 2  # consecutive correct answers needed to level up
