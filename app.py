@@ -232,7 +232,9 @@ NUM_DIAGNOSTIC = 3
 
 # Default model per backend.
 OLLAMA_MODEL = "llama3"
-GROQ_MODEL = "llama-3.1-8b-instant"
+# A larger model produces far more self-consistent quiz questions; this one is
+# free on Groq. Override via LLM_MODEL if needed.
+GROQ_MODEL = "llama-3.3-70b-versatile"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
@@ -304,19 +306,21 @@ def _chat(system_prompt, user_prompt, temperature=0.6, json_mode=False, retries=
     raise ValueError(f"Model did not return valid JSON after retries: {last_err}")
 
 
-def generate_mcq(subject, chapter, difficulty):
-    """Generate a multiple-choice question for a chapter/tier."""
+def _generate_mcq_once(subject, chapter, difficulty):
+    """Single generation attempt with structural validation."""
     desc = SUBJECTS[subject][chapter][difficulty]
     system_prompt = (
         "You are an expert instructor writing one high-quality multiple-choice "
-        "question. Respond ONLY with JSON — no markdown fences or extra prose."
+        "question. The option named by correct_option MUST be factually correct, "
+        "and the explanation MUST justify that exact option (no contradictions). "
+        "Respond ONLY with JSON — no markdown fences or extra prose."
     )
     user_prompt = f"""Create one {difficulty}-level multiple-choice question for "{chapter}" in a "{subject}" course.
 Focus: {desc}
 
 Return JSON EXACTLY like:
 {{"question": "...", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct_option": "A", "explanation": "why the correct answer is right"}}
-correct_option MUST be one of A, B, C, D."""
+correct_option MUST be one of A, B, C, D, and its option text must be the truly correct answer."""
     data = _chat(system_prompt, user_prompt, temperature=0.7, json_mode=True)
     if not all(k in data for k in ("question", "options", "correct_option", "explanation")):
         raise ValueError(f"Question JSON missing keys: {list(data)}")
@@ -325,6 +329,50 @@ correct_option MUST be one of A, B, C, D."""
     if data["correct_option"] not in data["options"]:
         raise ValueError("correct_option does not match an option.")
     return data
+
+
+def _verify_correct_option(q):
+    """Independently re-derive the correct option (LLM-as-judge, temp 0).
+
+    Returns the letter the grader believes is correct, or None on failure.
+    """
+    opts = "\n".join(f"{k}. {v}" for k, v in q["options"].items())
+    system_prompt = (
+        "You are a meticulous exam grader. Decide which single option is correct. "
+        "Respond ONLY with JSON."
+    )
+    user_prompt = (
+        f"Question: {q['question']}\nOptions:\n{opts}\n\n"
+        'Return {"correct_option": "X"} where X is the letter (A-D) of the '
+        "single correct option."
+    )
+    try:
+        v = _chat(system_prompt, user_prompt, temperature=0.0, json_mode=True)
+        letter = str(v.get("correct_option", "")).strip().upper()[:1]
+        return letter if letter in q["options"] else None
+    except Exception:  # noqa: BLE001 — verification is best-effort
+        return None
+
+
+def generate_mcq(subject, chapter, difficulty, attempts=2):
+    """Generate a self-consistent MCQ.
+
+    Generates, then has the model independently grade its own question. If the
+    grader disagrees with the labelled answer, regenerate. As a last resort,
+    trust the grader's verdict so the labelled answer is never self-contradictory.
+    """
+    last = None
+    for _ in range(attempts):
+        q = _generate_mcq_once(subject, chapter, difficulty)
+        last = q
+        verdict = _verify_correct_option(q)
+        if verdict is None or verdict == q["correct_option"]:
+            return q  # consistent (or unverifiable — accept as-is)
+    # Disagreement persisted: trust the independent grader on the final attempt.
+    verdict = _verify_correct_option(last)
+    if verdict and verdict in last["options"]:
+        last["correct_option"] = verdict
+    return last
 
 
 def generate_study_material(subject, chapter, difficulty):
