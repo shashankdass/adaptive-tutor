@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Streamlit secrets — NEVER commit real keys
+.streamlit/secrets.toml
+
+# Logs / local artifacts
+*.log
+.DS_Store
+
+# Local tooling
+.claude/
