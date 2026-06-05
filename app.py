@@ -647,6 +647,11 @@ def build_digest_payload():
 def render_sidebar():
     s = st.session_state
     stats = s.student_stats
+    # The avatar picker is key-bound: on a rerun its value is already set, so we
+    # reflect it into student_stats here — BEFORE the profile card below renders —
+    # and the chosen avatar shows up on the same single click.
+    st.session_state.setdefault("avatar_choice", stats["avatar"])
+    stats["avatar"] = st.session_state.avatar_choice
     with st.sidebar:
         st.markdown('<div class="hud-title">🛂 Access Portal</div>', unsafe_allow_html=True)
         st.radio("Access Portal", ["Student", "Parent"], key="role",
@@ -675,8 +680,7 @@ def render_sidebar():
                     f"{badge_html}</div>", unsafe_allow_html=True)
 
         if s.role == "Student":
-            avatar = st.selectbox("Avatar", AVATARS, index=AVATARS.index(stats["avatar"]))
-            stats["avatar"] = avatar
+            st.selectbox("🎭 Avatar", AVATARS, key="avatar_choice")
             if s.current_subject and st.button("🔁 Back to Missions", use_container_width=True):
                 back_to_path()
                 st.rerun()
@@ -814,7 +818,7 @@ def render_parent_portal():
 # =========================================================================== #
 def phase_path():
     s = st.session_state
-    st.title("🕹️ MISSION SELECT")
+    st.title(f"{s.student_stats['avatar']} MISSION SELECT")
     st.caption("Your path is set by your parent's chosen goals. Pick a mission!")
     path = student_path()
     if not path:
