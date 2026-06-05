@@ -713,8 +713,11 @@ def render_sidebar():
 
     with st.sidebar:
         st.markdown('<div class="hud-title">🛂 Access Portal</div>', unsafe_allow_html=True)
+        # Key-bound: changing it updates st.session_state.role and triggers
+        # Streamlit's built-in rerun on a single click. (No on_change=st.rerun —
+        # that's a no-op inside a callback and pops a warning.)
         st.radio("Access Portal", ["Student", "Parent"], key="role",
-                 horizontal=True, label_visibility="collapsed", on_change=st.rerun)
+                 horizontal=True, label_visibility="collapsed")
 
         xp_in_level = stats["xp"] % XP_PER_LEVEL
         pct = int(100 * xp_in_level / XP_PER_LEVEL)
