@@ -78,6 +78,15 @@ code, pre { background:#0B0C10 !important; border:1px solid rgba(0,229,255,0.25)
 @keyframes pulse { 0%{box-shadow:0 0 8px rgba(0,229,255,0.5);}
     50%{box-shadow:0 0 22px rgba(0,229,255,0.95);} 100%{box-shadow:0 0 8px rgba(0,229,255,0.5);} }
 [data-testid="stRadio"] label { color:#C5C6C7 !important; }
+.mastery-meter { text-align:center; font-weight:800; color:#00E5FF; font-size:1.05rem;
+    text-shadow:0 0 12px rgba(0,229,255,0.8); margin:6px 0; }
+.path-row { line-height:2.1; font-size:0.82rem; }
+.node { display:inline-block; padding:3px 9px; margin:2px; border-radius:8px; background:#0B0C10;
+    border:1px solid #2b3340; color:#9aa0a6; }
+.node-active { border-color:#00E5FF; color:#00E5FF; font-weight:700;
+    box-shadow:0 0 10px rgba(0,229,255,0.6); }
+.node-new { border-color:#FF007F; color:#FF007F; font-weight:700;
+    box-shadow:0 0 12px rgba(255,0,127,0.75); }
 </style>
 """
 
@@ -132,6 +141,12 @@ code, pre { background:#F1F5F9 !important; border:1px solid #E2E8F0; color:#1A20
 [data-baseweb="checkbox"] input { accent-color:#1E3A8A; }
 [data-testid="stCheckbox"] svg { fill:#1E3A8A; }
 [data-testid="stCheckbox"] label, [data-testid="stRadio"] label { color:#1A202C !important; }
+.mastery-meter { text-align:center; font-weight:800; color:#1E3A8A; font-size:1.05rem; margin:6px 0; }
+.path-row { line-height:2.1; font-size:0.82rem; }
+.node { display:inline-block; padding:3px 9px; margin:2px; border-radius:8px; background:#F1F5F9;
+    border:1px solid #E2E8F0; color:#475569; }
+.node-active { border-color:#1E3A8A; color:#1E3A8A; font-weight:700; }
+.node-new { border-color:#16A34A; color:#166534; background:#F0FDF4; font-weight:700; }
 </style>
 """
 
@@ -245,6 +260,11 @@ PROMOTION_THRESHOLD = 2
 NUM_DIAGNOSTIC = 3
 GROW_THRESHOLD = 0.70     # accuracy below this (with enough tries) = a "growth area"
 GROW_MIN_ATTEMPTS = 3
+
+# Learner-model defaults
+DEFAULT_BLUEPRINT = ["Concept Overview", "Core Puzzle A", "Core Puzzle B", "Final Milestone"]
+CHALLENGE_NODE = "⚡ [Challenge Quest]"
+REMEDIATION_NODE = "🛟 [Remediation Practice Quest]"
 
 OLLAMA_MODEL = "llama3"
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -368,7 +388,7 @@ def _generate_mcq_once(subject, chapter, difficulty):
 Style the WHOLE puzzle around this theme the child loves: {theme}. Keep options short and clear.
 
 Return JSON EXACTLY like:
-{{"question": "...", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct_option": "A", "explanation": "a cheerful, simple reason"}}
+{{"question": "...", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct_option": "A", "explanation": "a cheerful, simple reason", "hint": "a gentle clue that does NOT reveal the answer"}}
 correct_option MUST be one of A, B, C, D, and its option text must be the truly correct answer."""
     data = _chat(system_prompt, user_prompt, temperature=0.7, json_mode=True)
     if not all(k in data for k in ("question", "options", "correct_option", "explanation")):
@@ -528,6 +548,14 @@ def init_state():
         "badges": [],
         "consecutive_correct": 0,
         "completed_modules": [],
+        # --- Learner model (visible intelligence layer) ---
+        "mastery_score": 50,             # 0-100, starts neutral
+        "attempts_on_current_item": 0,   # wrong tries on the active puzzle
+        "hint_used": False,
+        "original_path": list(DEFAULT_BLUEPRINT),
+        "live_path": list(DEFAULT_BLUEPRINT),
+        "path_index": 0,
+        "mastery_reason": "Welcome! Answer puzzles to evolve your path. 🚀",
         "phase": "PATH",             # PATH | DIAGNOSTIC | STUDY | QUIZ
         "current_subject": None,
         "current_chapter": None,
@@ -562,6 +590,13 @@ def start_module(subject, chapter):
     s.study_read = False
     s.quiz_question = None
     s.quiz_result = None
+    # Fresh learning blueprint for this module (mastery_score persists as the
+    # cumulative learner model and keeps shaping the path).
+    s.original_path = list(DEFAULT_BLUEPRINT)
+    s.path_index = 0
+    s.attempts_on_current_item = 0
+    s.hint_used = False
+    update_live_path()
     s.phase = "DIAGNOSTIC"
 
 
@@ -679,6 +714,93 @@ def growth_areas():
     return out
 
 
+# ---- Learner model: path evolution + mastery scoring ----
+def update_live_path():
+    """Recompute live_path from original_path based on mastery (idempotent).
+
+    >80 → Acceleration (insert a Challenge Quest after the active node);
+    <50 → Remediation (inject a Practice Quest before the next core node);
+    50-80 → maintain the baseline blueprint unchanged.
+    """
+    s = st.session_state
+    path = list(s.original_path)
+    if not path:
+        s.live_path = []
+        return
+    idx = min(s.path_index, len(path) - 1)
+    if s.mastery_score > 80:
+        path.insert(idx + 1, CHALLENGE_NODE)
+        # Strong mastery also skips the next basic module entirely (Skip mode).
+        if s.mastery_score >= 90 and idx + 2 < len(path):
+            path.pop(idx + 2)
+    elif s.mastery_score < 50:
+        path.insert(min(idx + 1, len(path)), REMEDIATION_NODE)
+    s.live_path = path
+
+
+def apply_mastery(delta, why):
+    """Adjust mastery (clamped 0-100), redraw the path, and log the reasoning."""
+    s = st.session_state
+    s.mastery_score = max(0, min(100, s.mastery_score + delta))
+    update_live_path()
+    sign = f"+{delta}" if delta > 0 else (str(delta) if delta < 0 else "±0")
+    if s.mastery_score > 80:
+        branch = "Acceleration unlocked — a Challenge Quest was inserted! ⚡"
+    elif s.mastery_score < 50:
+        branch = "Remediation branch unlocked to bridge the gap. 🛟"
+    else:
+        branch = "Course maintained — steady progress."
+    s.mastery_reason = f"System Alert: Mastery {sign} ({why}). {branch}"
+
+
+def advance_path_node():
+    s = st.session_state
+    s.path_index = min(s.path_index + 1, max(0, len(s.original_path) - 1))
+    update_live_path()
+
+
+def _breadcrumb(nodes, active_name):
+    chips = []
+    for n in nodes:
+        if n.startswith(("⚡", "🛟")):
+            cls = "node node-new"
+        elif n == active_name:
+            cls = "node node-active"
+        else:
+            cls = "node"
+        chips.append(f'<span class="{cls}">{n}</span>')
+    return '<div class="path-row">' + " ➔ ".join(chips) + "</div>"
+
+
+def render_path_map():
+    """The Path Evolution Map: original blueprint vs the live, mutating path."""
+    s = st.session_state
+    if not s.original_path:
+        return
+    active_name = s.original_path[min(s.path_index, len(s.original_path) - 1)]
+    st.markdown("##### 🗺️ Path Evolution Map")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("**Originally Planned Path:**")
+        st.markdown(_breadcrumb(s.original_path, active_name), unsafe_allow_html=True)
+    with col2:
+        st.markdown("**Updated Live Path:**")
+        st.markdown(_breadcrumb(s.live_path, active_name), unsafe_allow_html=True)
+
+
+def render_mastery_alert():
+    s = st.session_state
+    reason = s.mastery_reason
+    if not reason:
+        return
+    if s.mastery_score < 50:
+        st.warning(reason)
+    elif s.mastery_score > 80:
+        st.success(reason)
+    else:
+        st.info(reason)
+
+
 def build_digest_payload():
     s = st.session_state
     stats = s.student_stats
@@ -686,7 +808,8 @@ def build_digest_payload():
         "type": "weekly_family_update",
         "to": "parent@example.com",
         "child": {"avatar": stats["avatar"], "level": stats["level"],
-                  "xp": stats["xp"], "win_streak": stats["streak"]},
+                  "xp": stats["xp"], "win_streak": stats["streak"],
+                  "mastery_score": s.mastery_score},
         "story_theme": st.session_state.story_theme,
         "active_modules": [c for _, c in student_path()],
         "quests_completed": len(s.completed_modules),
@@ -730,6 +853,7 @@ def render_sidebar():
               <div class="hud-title">⚡ Level {stats['level']}</div>
               <div class="xp-bar"><div class="xp-fill" style="width:{pct}%"></div></div>
               <div class="xp-text">{xp_in_level} / {XP_PER_LEVEL} XP · {stats['xp']} total</div>
+              <div class="mastery-meter">🧠 Mastery {s.mastery_score}/100</div>
               <div class="streak-meter">Win streak: {flames} ({stats['streak']})</div>
               <div class="hud-row"><span class="k">Quests done</span><span class="v">{len(s.completed_modules)}</span></div>
             </div>
@@ -842,6 +966,7 @@ def render_parent_portal():
     st.markdown(
         f"""
         <div class="parent-card"><div class="tile-row">
+          <div class="stat-tile"><div class="num">{s.mastery_score}</div><div class="lbl">Mastery</div></div>
           <div class="stat-tile"><div class="num">{stats['level']}</div><div class="lbl">Level</div></div>
           <div class="stat-tile"><div class="num">{stats['xp']}</div><div class="lbl">Total XP</div></div>
           <div class="stat-tile"><div class="num">{stats['streak']}</div><div class="lbl">Win Streak</div></div>
@@ -851,6 +976,9 @@ def render_parent_portal():
         """,
         unsafe_allow_html=True,
     )
+    # Mirror the live Path Evolution Map + latest reasoning for the parent.
+    render_mastery_alert()
+    render_path_map()
 
     # --- 3. Growth spotlights (encouraging skill-gap framing) ---
     st.markdown("### 🌱 Growth Spotlights")
@@ -992,6 +1120,7 @@ def phase_study():
     st.caption(f"{s.current_chapter} · {TIER_LABELS[s.current_difficulty]}")
     if s.baseline_skill:
         st.markdown(f"Your warm-up placed you at **{TIER_LABELS[s.baseline_skill]}**! 🌟")
+    render_path_map()
     if s.study_content is None:
         with st.spinner("Writing your adventure briefing…"):
             try:
@@ -1027,7 +1156,12 @@ def phase_quiz():
     s = st.session_state
     st.title("⚔️ PUZZLE ARENA")
     st.caption(f"{s.current_chapter} · {TIER_LABELS[s.current_difficulty]}")
+    render_mastery_alert()
+    render_path_map()
+
     if s.quiz_question is None:
+        s.attempts_on_current_item = 0      # fresh item → reset retry/hint trackers
+        s.hint_used = False
         with st.spinner("Summoning your puzzle…"):
             try:
                 s.quiz_question = generate_quiz_question(
@@ -1038,34 +1172,80 @@ def phase_quiz():
                     st.rerun()
                 return
     q = s.quiz_question
+
+    # ---- Unresolved: allow retries, hints, or skipping ----
     if s.quiz_result is None:
         with st.container(border=True):
             st.markdown(f"### {q['question']}")
+            if s.hint_used:
+                st.info(f"💡 Hint: {q.get('hint', 'Take it one step at a time — you can do it!')}")
+            if s.attempts_on_current_item:
+                st.caption(f"Tries so far: {s.attempts_on_current_item} — keep going! 💪")
             choice = st.radio("Pick your answer:", list("ABCD"),
                               format_func=lambda k: f"{k}.  {q['options'][k]}",
-                              index=None, key="quiz_choice")
-            if st.button("🎯 Lock It In!", type="primary"):
-                if choice is None:
-                    st.warning("Pick an answer first!")
+                              index=None, key=f"quiz_choice_{s.attempts_on_current_item}")
+            c1, c2, c3 = st.columns(3)
+            submit = c1.button("🎯 Lock It In!", type="primary", use_container_width=True)
+            hint = c2.button("💡 Hint", use_container_width=True)
+            skip = c3.button("⏭️ Skip", use_container_width=True)
+
+        if hint:
+            s.hint_used = True
+            st.rerun()
+
+        if skip:
+            apply_mastery(-3, "skipped the question")
+            transition = record_wrong()
+            advance_path_node()
+            s.quiz_result = {
+                "correct": False, "skipped": True, "your_answer": "(skipped)",
+                "correct_answer": f"{q['correct_option']}. {q['options'][q['correct_option']]}",
+                "explanation": q["explanation"], "transition": transition,
+            }
+            st.rerun()
+
+        if submit:
+            if choice is None:
+                st.warning("Pick an answer first!")
+            elif choice == q["correct_option"]:
+                if s.hint_used:
+                    apply_mastery(5, "correct after a hint")
+                elif s.attempts_on_current_item == 0:
+                    apply_mastery(10, "correct on the first try")
                 else:
-                    correct = choice == q["correct_option"]
-                    transition = record_correct() if correct else record_wrong()
-                    s.quiz_result = {
-                        "correct": correct,
-                        "your_answer": f"{choice}. {q['options'][choice]}",
-                        "correct_answer": f"{q['correct_option']}. {q['options'][q['correct_option']]}",
-                        "explanation": q["explanation"],
-                        "transition": transition,
-                    }
-                    st.rerun()
+                    apply_mastery(5, "correct after retrying")
+                transition = record_correct()
+                advance_path_node()
+                s.quiz_result = {
+                    "correct": True, "skipped": False,
+                    "your_answer": f"{choice}. {q['options'][choice]}",
+                    "correct_answer": f"{q['correct_option']}. {q['options'][q['correct_option']]}",
+                    "explanation": q["explanation"], "transition": transition,
+                }
+                st.rerun()
+            else:
+                s.attempts_on_current_item += 1
+                tries = s.attempts_on_current_item
+                if tries >= 3:
+                    apply_mastery(-15, "3+ retries (exponential downgrade)")
+                elif tries == 2:
+                    apply_mastery(-5, "two wrong tries")
+                else:
+                    s.mastery_reason = "🤔 First miss — no penalty. Give it another go!"
+                if tries >= 2:
+                    s.hint_used = True   # auto-reveal the hint to help them through
+                st.rerun()
         return
+
+    # ---- Resolved: feedback + next step ----
     r = s.quiz_result
     with st.container(border=True):
         if r["correct"]:
             st.success("✅ WOOHOO — that's right! 🎉")
             st.balloons()
         else:
-            st.warning("💛 Good try! Here's the answer:")
+            st.warning("⏭️ Skipped — here's the answer:" if r.get("skipped")
+                       else "💛 Good try! Here's the answer:")
             st.markdown(f"**You picked:** {r['your_answer']}")
             st.markdown(f"**Answer:** {r['correct_answer']}")
         st.info(f"**Why:** {r['explanation']}")
@@ -1081,6 +1261,8 @@ def phase_quiz():
         s.study_read = False
         s.quiz_question = None
         s.quiz_result = None
+        s.attempts_on_current_item = 0
+        s.hint_used = False
         s.phase = "STUDY"
         st.rerun()
 
